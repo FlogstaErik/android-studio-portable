@@ -16,6 +16,39 @@
   <!-- Targets -->
   <target name="release" depends="release.app" description="Release"/>
 
+  <!-- Verify the downloaded archive against its pinned SHA-256 before extracting it -->
+  <target name="extract" depends="checksum.verify, papps-type-archive.extract"/>
+
+  <target name="checksum.compute">
+    <fail message="Property 'atf.win64.sha256' must be defined in build.properties">
+      <condition>
+        <or>
+          <not><isset property="atf.win64.sha256"/></not>
+          <equals arg1="${atf.win64.sha256}" arg2="" trim="true"/>
+        </or>
+      </condition>
+    </fail>
+    <fail message="Checksum verification only supports win64, got '${atf.arch}'">
+      <condition>
+        <not><equals arg1="${atf.arch}" arg2="win64"/></not>
+      </condition>
+    </fail>
+    <checksum file="${atf.original}" algorithm="SHA-256" property="atf.sha256.actual"/>
+    <condition property="atf.sha256.ok">
+      <equals arg1="${atf.sha256.actual}" arg2="${atf.win64.sha256}" casesensitive="false" trim="true"/>
+    </condition>
+  </target>
+
+  <target name="checksum.verify" depends="checksum.compute, checksum.mismatch">
+    <echo message="SHA-256 verified for ${atf.original}: ${atf.sha256.actual}"/>
+  </target>
+
+  <target name="checksum.mismatch" depends="checksum.compute" unless="atf.sha256.ok">
+    <!-- remove the file so the next run downloads it again instead of reusing it -->
+    <delete file="${atf.original}"/>
+    <fail message="SHA-256 mismatch for ${atf.url}: expected ${atf.win64.sha256}, got ${atf.sha256.actual}"/>
+  </target>
+
   <target name="prepare">
     <echo message="Preparing release..."/>
 
