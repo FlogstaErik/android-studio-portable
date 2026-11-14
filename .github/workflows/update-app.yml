@@ -199,6 +199,21 @@ jobs:
               return matchingUrls.at(-1).url;
             }
 
+            function windowsZipSha256(downloadPage, url) {
+              // The download page lists each package in a table row with its SHA-256 checksum.
+              const filename = url.split('/').at(-1);
+              const rows = [...downloadPage.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/g)].map((match) => match[1]);
+              const row = rows.find((candidate) => candidate.includes(`>${filename}<`));
+              if (!row) {
+                throw new Error(`Cannot find the download table row for ${filename}`);
+              }
+              const checksums = [...row.matchAll(/<td\b[^>]*>\s*([0-9a-fA-F]{64})\s*<\/td>/g)].map((match) => match[1].toLowerCase());
+              if (checksums.length !== 1) {
+                throw new Error(`Expected one SHA-256 checksum for ${filename}, found ${checksums.length}`);
+              }
+              return checksums[0];
+            }
+
             async function fetchText(url) {
               const response = await fetch(url, {
                 headers: {
@@ -228,11 +243,14 @@ jobs:
             }
 
             const latest = latestStableBuild(await fetchText(updatesUrl));
-            const artifactUrl = windowsZipUrl(await fetchText(latest.downloadUrl), latest.version);
+            const downloadPage = await fetchText(latest.downloadUrl);
+            const artifactUrl = windowsZipUrl(downloadPage, latest.version);
+            const artifactSha256 = windowsZipSha256(downloadPage, artifactUrl);
             await verifyDownloadUrl(artifactUrl);
 
             core.info(`Resolved latest stable Android Studio build: ${JSON.stringify(latest)}`);
             core.info(`Resolved Windows zip: ${artifactUrl}`);
+            core.info(`Resolved Windows zip SHA-256: ${artifactSha256}`);
 
             const relativePath = 'build.properties';
             const currentContent = readFile(relativePath);
@@ -246,6 +264,7 @@ jobs:
             updatedContent = replaceProperty(updatedContent, 'app.version', latest.version);
             const versionChanged = updatedContent !== currentContent;
             updatedContent = replaceProperty(updatedContent, 'atf.win64.url', artifactUrl);
+            updatedContent = replaceProperty(updatedContent, 'atf.win64.sha256', artifactSha256);
 
             const nextRelease = versionChanged ? currentRelease + 1 : currentRelease;
             updatedContent = replaceProperty(updatedContent, 'app.release', String(nextRelease));
@@ -262,6 +281,7 @@ jobs:
             core.setOutput('version-label', latest.versionLabel);
             core.setOutput('previous-version', currentVersion);
             core.setOutput('release', String(nextRelease));
+            core.setOutput('sha256', artifactSha256);
       -
         name: Create pull request
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
@@ -276,6 +296,8 @@ jobs:
           delete-branch: true
           body: |
             This updates Android Studio to ${{ steps.update.outputs.version-label }}.
+
+            SHA-256 of the Windows zip, as published on the Android Studio download page: `${{ steps.update.outputs.sha256 }}`
 
   diff:
     if: github.event_name == 'pull_request'

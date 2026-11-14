@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/portapps/android-studio-portable/internal/vmoptions"
 	"github.com/portapps/portapps/v3"
-	"github.com/portapps/portapps/v3/pkg/files"
 	"github.com/portapps/portapps/v3/pkg/log"
 )
 
@@ -17,7 +17,8 @@ var (
 )
 
 const (
-	vmOptionsFile = "studio.vmoptions"
+	vmOptionsFile         = "studio.vmoptions"
+	vmOptionsDefaultsFile = "studio.vmoptions.default"
 )
 
 func init() {
@@ -48,24 +49,61 @@ idea.log.path={{ DATA_PATH }}/log`, "{{ DATA_PATH }}", strings.ReplaceAll(app.Da
 		log.Fatal().Err(err).Msg("Cannot write idea.properties")
 	}
 
+	// Variables set under common.env in portapp.yml take precedence over the
+	// portable defaults below.
+	configEnv := make(map[string]bool)
+	for key := range app.Config().Common.Env {
+		configEnv[strings.ToUpper(key)] = true
+	}
+	setEnv := func(key, value string) {
+		if configEnv[strings.ToUpper(key)] {
+			log.Info().Msgf("Using %s from configuration: %s", key, os.Getenv(key))
+			return
+		}
+		if err := os.Setenv(key, value); err != nil {
+			log.Error().Err(err).Msgf("Cannot set %s", key)
+		}
+	}
+
 	// https://developer.android.com/studio/command-line/variables
 	sdkPath := filepath.Join(app.DataPath, "sdk")
 	androidUserPath := filepath.Join(app.DataPath, ".android")
-	os.Setenv("ANDROID_HOME", sdkPath)
-	os.Setenv("ANDROID_SDK_ROOT", sdkPath)
-	os.Setenv("ANDROID_SDK_HOME", app.DataPath)
-	os.Setenv("ANDROID_USER_HOME", androidUserPath)
-	os.Setenv("ANDROID_EMULATOR_HOME", androidUserPath)
-	os.Setenv("ANDROID_AVD_HOME", filepath.Join(androidUserPath, "avd"))
-	os.Setenv("GRADLE_USER_HOME", filepath.Join(app.DataPath, ".gradle"))
+	setEnv("ANDROID_HOME", sdkPath)
+	setEnv("ANDROID_SDK_ROOT", sdkPath)
+	setEnv("ANDROID_SDK_HOME", app.DataPath)
+	setEnv("ANDROID_USER_HOME", androidUserPath)
+	setEnv("ANDROID_EMULATOR_HOME", androidUserPath)
+	setEnv("ANDROID_AVD_HOME", filepath.Join(androidUserPath, "avd"))
+	setEnv("GRADLE_USER_HOME", filepath.Join(app.DataPath, ".gradle"))
 
 	// https://developer.android.com/studio/intro/studio-config
-	os.Setenv("STUDIO_PROPERTIES", studioPropPath)
-	os.Setenv("STUDIO_VM_OPTIONS", filepath.Join(app.DataPath, vmOptionsFile))
-	if !files.Exists(filepath.Join(app.DataPath, vmOptionsFile)) {
-		files.CopyFile(filepath.Join(app.AppPath, "bin", "studio64.exe.vmoptions"), filepath.Join(app.DataPath, vmOptionsFile))
+	setEnv("STUDIO_PROPERTIES", studioPropPath)
+
+	// Keep the user's VM options in the data folder. After an Android Studio
+	// upgrade, an unedited file is refreshed from the new defaults; an edited
+	// one is kept. The bundled file in the app folder is never modified.
+	vmOptionsPath := filepath.Join(app.DataPath, vmOptionsFile)
+	result, usable, err := vmoptions.Sync(
+		filepath.Join(app.AppPath, "bin", "studio64.exe.vmoptions"),
+		vmOptionsPath,
+		filepath.Join(app.DataPath, vmOptionsDefaultsFile),
+	)
+	if err != nil {
+		log.Error().Err(err).Msg("Cannot sync VM options")
+	}
+	switch result {
+	case vmoptions.Created:
+		log.Info().Msgf("Created %s from the bundled defaults", vmOptionsPath)
+	case vmoptions.Refreshed:
+		log.Info().Msgf("Android Studio defaults changed, refreshed %s", vmOptionsPath)
+	case vmoptions.KeptEdited:
+		log.Warn().Msgf("Android Studio defaults changed but %s has been edited and was kept. "+
+			"Compare it with %s, or delete it to start again from the new defaults.", vmOptionsPath, vmOptionsDefaultsFile)
+	}
+	if usable {
+		setEnv("STUDIO_VM_OPTIONS", vmOptionsPath)
 	} else {
-		files.CopyFile(filepath.Join(app.DataPath, vmOptionsFile), filepath.Join(app.AppPath, "bin", "studio64.exe.vmoptions"))
+		log.Warn().Msg("No usable VM options file, Android Studio will use its bundled defaults")
 	}
 
 	defer app.Close()
